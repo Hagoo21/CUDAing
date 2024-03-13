@@ -1,4 +1,4 @@
-﻿#include "cuda_runtime.h"
+#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
 #include <stdio.h>
@@ -112,7 +112,7 @@ int main()
             int num_blocks_per_block_width = (width + block_width - 1) / block_width;
 
             // Print results to terminal
-            printf("Block Width: %d, Matrix Size: %d, Average Kernel Execution Time: %.2f ms, NumBlocks/BlockWidth: %.2f\n",
+            printf("Block Width: %d,\t\t Matrix Size: %d,\t Kernel Execution Time: %.2f ms,\t NumBlocks/BlockWidth: %.2f\n",
                 block_width, width, elapsed_gpu, static_cast<float>(num_blocks_per_block_width));
 
             // Write results to CSV file
@@ -134,21 +134,6 @@ int main()
     csv_file.close();
 
     printf("Matrix multiplication results saved to matrix_multiplication_results.csv\n");
-
-    // Print summary
-    printf("Summary:\n");
-    for (int i = 0; i < num_sizes; ++i) {
-        int width = sizes[i];
-        printf("Matrix Size %d:\n", width);
-        printf("GPU Execution Time vs NumBlocks/BlockWidth:\n");
-        for (int b = 0; b < num_block_widths; ++b) {
-            int block_width = block_widths[b];
-            int num_blocks_per_block_width = (width + block_width - 1) / block_width;
-            printf("Block Width: %d, GPU Execution Time: %.2f ms, NumBlocks/BlockWidth: %.2f\n",
-                block_width, average_execution_time[i][b], static_cast<float>(num_blocks_per_block_width));
-        }
-        printf("\n");
-    }
 
     return 0;
 }

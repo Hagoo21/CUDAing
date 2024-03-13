@@ -1,4 +1,4 @@
-﻿#include "cuda_runtime.h"
+#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
 #include <stdio.h>
@@ -63,6 +63,7 @@ int main()
     // Arrays to store execution times
     float execution_times_cpu[NUM_SIZES][REPETITIONS];
     float execution_times_gpu[NUM_SIZES][REPETITIONS];
+    float transfer_times_gpu[NUM_SIZES][REPETITIONS];
 
     // Repeat for each matrix size
     for (int i = 0; i < num_sizes; ++i)
@@ -89,10 +90,6 @@ int main()
         cudaMalloc((void**)&d_N, size);
         cudaMalloc((void**)&d_P, size);
 
-        // Transfer matrices M, N from host to device
-        cudaMemcpy(d_M, h_M, size, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_N, h_N, size, cudaMemcpyHostToDevice);
-
         // Create events for timing
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
@@ -100,6 +97,13 @@ int main()
 
         // Repeat for multiple measurements
         for (int k = 0; k < REPETITIONS; ++k) {
+            // Transfer matrices M, N from host to device
+            clock_t transfer_start = clock();
+            cudaMemcpy(d_M, h_M, size, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_N, h_N, size, cudaMemcpyHostToDevice);
+            clock_t transfer_end = clock();
+            transfer_times_gpu[i][k] = (float)(transfer_end - transfer_start) / CLOCKS_PER_SEC * 1000; // Convert to milliseconds
+
             // Measure CPU matrix multiplication time
             clock_t cpu_start = clock();
             MatrixMulCPU(h_M, h_N, h_P, width);
@@ -134,12 +138,12 @@ int main()
     }
 
     // Write header
-    fprintf(fp, "Matrix Size,CPU execution time(ms),GPU execution time(ms)\n");
+    fprintf(fp, "Matrix Size,CPU execution time(ms),GPU execution time(ms),GPU data transfer time(ms)\n");
 
     // Write data
     for (int i = 0; i < num_sizes; ++i) {
         for (int j = 0; j < REPETITIONS; ++j) {
-            fprintf(fp, "%d,%.2f,%.2f\n", sizes[i], execution_times_cpu[i][j], execution_times_gpu[i][j]);
+            fprintf(fp, "%d,%.2f,%.2f,%.2f\n", sizes[i], execution_times_cpu[i][j], execution_times_gpu[i][j], transfer_times_gpu[i][j]);
         }
     }
 
@@ -149,16 +153,18 @@ int main()
     // Calculate average execution times
     float average_times_cpu[NUM_SIZES];
     float average_times_gpu[NUM_SIZES];
+    float average_transfer_times_gpu[NUM_SIZES];
     for (int i = 0; i < num_sizes; ++i) {
         average_times_cpu[i] = calculateAverageExecutionTime(execution_times_cpu[i], REPETITIONS);
         average_times_gpu[i] = calculateAverageExecutionTime(execution_times_gpu[i], REPETITIONS);
+        average_transfer_times_gpu[i] = calculateAverageExecutionTime(transfer_times_gpu[i], REPETITIONS);
     }
 
     // Print execution times
-    printf("Matrix Size\tCPU Time (ms)\tGPU Time (ms)\n");
+    printf("Matrix Size\tCPU Time (ms)\tGPU Time (ms)\tGPU Transfer Time (ms)\n");
     for (int i = 0; i < num_sizes; ++i)
     {
-        printf("%d\t\t%.2f\t\t%.2f\n", sizes[i], average_times_cpu[i], average_times_gpu[i]);
+        printf("%d\t\t%.2f\t\t%.2f\t\t%.2f\n", sizes[i], average_times_cpu[i], average_times_gpu[i], average_transfer_times_gpu[i]);
     }
 
     return 0;

@@ -1,4 +1,4 @@
-﻿#include "cuda_runtime.h"
+#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
 #include <stdio.h>
@@ -6,13 +6,8 @@
 #include <time.h>   // For time()
 
 #define NUM_SIZES 5
+#define TILE_WIDTH 10 // Adjust this as needed
 #define REPETITIONS 10 // Number of repetitions for timing measurements
-
-// Define different TILE_WIDTH configurations
-#define TILE_WIDTH_2 2
-#define TILE_WIDTH_5 5
-#define TILE_WIDTH_10 10
-#define TILE_WIDTH_25 25
 
 cudaError_t multWithCuda(float* P, float* M, float* N, int Width);
 
@@ -32,6 +27,46 @@ __global__ void MatrixMulKernel(float* M, float* N, float* P, int Width)
     }
 }
 
+//GPU Tiled Matrix Multiplication Implementation
+__global__ void TiledMatrixMulKernel(float* M, float* N, float* P, int Width) {
+    int row = blockIdx.y * TILE_WIDTH + threadIdx.y;
+    int col = blockIdx.x * TILE_WIDTH + threadIdx.x;
+
+    __shared__ float M_tile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float N_tile[TILE_WIDTH][TILE_WIDTH];
+
+    float Pvalue = 0;
+
+    int numTiles = (Width + TILE_WIDTH - 1) / TILE_WIDTH;
+
+    for (int t = 0; t < numTiles; ++t) {
+        int mRow = row;
+        int mCol = t * TILE_WIDTH + threadIdx.x;
+        int nRow = t * TILE_WIDTH + threadIdx.y;
+        int nCol = col;
+
+        if (mRow < Width && mCol < Width)
+            M_tile[threadIdx.y][threadIdx.x] = M[mRow * Width + mCol];
+        else
+            M_tile[threadIdx.y][threadIdx.x] = 0.0;
+
+        if (nRow < Width && nCol < Width)
+            N_tile[threadIdx.y][threadIdx.x] = N[nRow * Width + nCol];
+        else
+            N_tile[threadIdx.y][threadIdx.x] = 0.0;
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k)
+            Pvalue += M_tile[threadIdx.y][k] * N_tile[k][threadIdx.x];
+
+        __syncthreads();
+    }
+
+    if (row < Width && col < Width)
+        P[row * Width + col] = Pvalue;
+}
+
 // CPU Matrix Multiply Implementation
 void MatrixMulCPU(float* M, float* N, float* P, int Width)
 {
@@ -47,46 +82,6 @@ void MatrixMulCPU(float* M, float* N, float* P, int Width)
             P[i * Width + j] = sum;
         }
     }
-}
-
-//GPU Tiled Matrix Multiplication Implementation
-__global__ void TiledMatrixMulKernel(float* M, float* N, float* P, int Width, int Tile_Width) {
-    int row = blockIdx.y * Tile_Width + threadIdx.y;
-    int col = blockIdx.x * Tile_Width + threadIdx.x;
-
-    __shared__ float M_tile[TILE_WIDTH_25][TILE_WIDTH_25];
-    __shared__ float N_tile[TILE_WIDTH_25][TILE_WIDTH_25];
-
-    float Pvalue = 0;
-
-    int numTiles = (Width + Tile_Width - 1) / Tile_Width;
-
-    for (int t = 0; t < numTiles; ++t) {
-        int mRow = row;
-        int mCol = t * Tile_Width + threadIdx.x;
-        int nRow = t * Tile_Width + threadIdx.y;
-        int nCol = col;
-
-        if (mRow < Width && mCol < Width)
-            M_tile[threadIdx.y][threadIdx.x] = M[mRow * Width + mCol];
-        else
-            M_tile[threadIdx.y][threadIdx.x] = 0.0;
-
-        if (nRow < Width && nCol < Width)
-            N_tile[threadIdx.y][threadIdx.x] = N[nRow * Width + nCol];
-        else
-            N_tile[threadIdx.y][threadIdx.x] = 0.0;
-
-        __syncthreads();
-
-        for (int k = 0; k < Tile_Width; ++k)
-            Pvalue += M_tile[threadIdx.y][k] * N_tile[k][threadIdx.x];
-
-        __syncthreads();
-    }
-
-    if (row < Width && col < Width)
-        P[row * Width + col] = Pvalue;
 }
 
 // Helper function to calculate average execution time
@@ -106,8 +101,8 @@ int main()
 
     // Arrays to store execution times
     float execution_times_cpu[NUM_SIZES][REPETITIONS];
+    float execution_times_gpu[NUM_SIZES][REPETITIONS];
     float execution_times_tiled_gpu[NUM_SIZES][REPETITIONS];
-    float execution_times_regular_gpu[NUM_SIZES][REPETITIONS];
 
     // Repeat for each matrix size
     for (int i = 0; i < num_sizes; ++i)
@@ -134,6 +129,11 @@ int main()
         cudaMalloc((void**)&d_N, size);
         cudaMalloc((void**)&d_P, size);
 
+        // Create events for timing
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+
         // Repeat for multiple measurements
         for (int k = 0; k < REPETITIONS; ++k) {
             // Transfer matrices M, N from host to device
@@ -146,28 +146,24 @@ int main()
             clock_t cpu_end = clock();
             execution_times_cpu[i][k] = (float)(cpu_end - cpu_start) / CLOCKS_PER_SEC * 1000; // Convert to milliseconds
 
-            // Measure tiled GPU matrix multiplication time
-            cudaEvent_t start_tiled, stop_tiled;
-            cudaEventCreate(&start_tiled);
-            cudaEventCreate(&stop_tiled);
-            cudaEventRecord(start_tiled, 0);
-            TiledMatrixMulKernel << <1, dim3(width, width) >> > (d_M, d_N, d_P, width, TILE_WIDTH_25);
-            cudaEventRecord(stop_tiled, 0);
-            cudaEventSynchronize(stop_tiled);
-            float tiled_gpu_execution_time;
-            cudaEventElapsedTime(&tiled_gpu_execution_time, start_tiled, stop_tiled);
-            execution_times_tiled_gpu[i][k] = tiled_gpu_execution_time;
+            // Measure GPU matrix multiplication time
+            cudaEventRecord(start, 0);
+            MatrixMulKernel << <1, dim3(width, width) >> > (d_M, d_N, d_P, width);
+            cudaEventRecord(stop, 0);
+            cudaEventSynchronize(stop);
+            float gpu_execution_time;
+            cudaEventElapsedTime(&gpu_execution_time, start, stop);
+            execution_times_gpu[i][k] = gpu_execution_time;
 
-            // Measure regular GPU matrix multiplication time
-            cudaEvent_t start_regular, stop_regular;
-            cudaEventCreate(&start_regular);
-            cudaEventCreate(&stop_regular);
-            cudaEventRecord(start_regular, 0);
-            cudaEventRecord(stop_regular, 0);
-            cudaEventSynchronize(stop_regular);
-            float regular_gpu_execution_time;
-            cudaEventElapsedTime(&regular_gpu_execution_time, start_regular, stop_regular);
-            execution_times_regular_gpu[i][k] = regular_gpu_execution_time;
+            // Measure GPU tiled matrix multiplication time
+            cudaEventRecord(start, 0);
+            int numBlocks = (width + TILE_WIDTH - 1) / TILE_WIDTH;
+            TiledMatrixMulKernel << <dim3(numBlocks, numBlocks), dim3(TILE_WIDTH, TILE_WIDTH) >> > (d_M, d_N, d_P, width);
+            cudaEventRecord(stop, 0);
+            cudaEventSynchronize(stop);
+            float tiled_gpu_execution_time;
+            cudaEventElapsedTime(&tiled_gpu_execution_time, start, stop);
+            execution_times_tiled_gpu[i][k] = tiled_gpu_execution_time;
         }
 
         // Free device memory
@@ -181,19 +177,25 @@ int main()
         free(h_P);
     }
 
-    // Print results
-    printf("Matrix Size\tCPU Time (ms)\tTiled GPU Time (ms)\tRegular GPU Time (ms)\n");
-    for (int i = 0; i < num_sizes; ++i)
-    {
-        printf("%d\t\t", sizes[i]);
-        // CPU execution time
-        printf("%.2f\t\t", calculateAverageExecutionTime(execution_times_cpu[i], REPETITIONS));
-        // Tiled GPU execution time
-        printf("%.2f\t\t", calculateAverageExecutionTime(execution_times_tiled_gpu[i], REPETITIONS));
-        // Regular GPU execution time
-        printf("%.2f\n", calculateAverageExecutionTime(execution_times_regular_gpu[i], REPETITIONS));
+    // Write the results to a CSV file
+    FILE* fp = fopen("execution_times.csv", "w");
+    if (fp == NULL) {
+        printf("Error opening file.\n");
+        return 1;
     }
+
+    // Write header
+    fprintf(fp, "Matrix Size,CPU Avg Time (ms),GPU Avg Time (ms),Tiled GPU Avg Time (ms)\n");
+
+    // Write data
+    for (int i = 0; i < num_sizes; ++i) {
+        for (int j = 0; j < REPETITIONS; ++j) {
+            fprintf(fp, "%d,%.2f,%.2f,%.2f\n", sizes[i], execution_times_cpu[i][j], execution_times_gpu[i][j], execution_times_tiled_gpu[i][j]);
+        }
+    }
+
+    fclose(fp);
+    printf("Execution times saved to execution_times.csv\n");
 
     return 0;
 }
-
